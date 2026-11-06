@@ -8,7 +8,7 @@
 // sync via localStorage + plugin events. The debug/mic listeners only arm in
 // the main window.
 
-import { definePlugin, type PluginContext, type TtsSettingsLike } from "../../sdk/js/@companion/plugin";
+import { definePlugin, type PluginContext, type TtsSettingsLike } from "@companion-lab/plugin";
 import { currentWindowLabel, tauriInvoke, tauriListen } from "./tauri";
 import { initTtsSettings, getTtsSettings } from "./tts-settings";
 import { createTtsProvider } from "./tts-provider";

@@ -12,7 +12,7 @@
 // (ctx.services.stt()?.setSuppress) and releases it after a 700ms grace
 // tail; the grace timer is cancelled whenever new playback starts.
 
-import type { PluginContext, TtsProvider, TtsStream } from "../../sdk/js/@companion/plugin";
+import type { PluginContext, TtsProvider, TtsStream } from "@companion-lab/plugin";
 import { cloudSynthesize } from "./cloud-tts";
 import { DEFAULT_TTS_SETTINGS, getTtsSettings, type TtsSettings } from "./tts-settings";
 

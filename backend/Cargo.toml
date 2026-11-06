@@ -10,7 +10,7 @@ name = "tts_backend"
 crate-type = ["cdylib"]
 
 [dependencies]
-companion-plugin-sdk = { path = "../../sdk/rust/companion-plugin-sdk" }
+companion-plugin-sdk = "0.1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Engine dependencies mirror app/src-tauri/Cargo.toml exactly (versions and

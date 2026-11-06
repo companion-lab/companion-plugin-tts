@@ -7,6 +7,6 @@
     "download:models": "bash scripts/download-models.sh"
   },
   "dependencies": {
-    "@companion-lab/plugin": "file:./sdk/js/@companion/plugin"
+    "@companion-lab/plugin": "^0.1.0"
   }
 }

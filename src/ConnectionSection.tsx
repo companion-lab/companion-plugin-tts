@@ -7,7 +7,7 @@
 
 import { type ChangeEvent } from "react";
 import { useSyncExternalStore } from "react";
-import type { PluginContext } from "../../sdk/js/@companion/plugin";
+import type { PluginContext } from "@companion-lab/plugin";
 import {
   getTtsKey,
   getTtsKeyError,
