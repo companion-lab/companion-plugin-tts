@@ -1,0 +1,11 @@
+# Build outputs
+node_modules/
+target/
+dist/
+frontend.js
+
+# macOS
+.DS_Store
+
+# Downloaded models (see scripts/download-models.sh)
+assets/

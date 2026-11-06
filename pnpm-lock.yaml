@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@companion/plugin':
+        specifier: file:../../sdk/js/@companion/plugin
+        version: file:../../sdk/js/@companion/plugin
+
+packages:
+
+  '@companion/plugin@file:../../sdk/js/@companion/plugin':
+    resolution: {directory: ../../sdk/js/@companion/plugin, type: directory}
+
+snapshots:
+
+  '@companion/plugin@file:../../sdk/js/@companion/plugin': {}
