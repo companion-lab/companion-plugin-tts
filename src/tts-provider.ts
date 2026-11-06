@@ -67,12 +67,18 @@ export function amplitudeToViseme(
 
 const SUPPRESS_GRACE_MS = 700;
 let suppressReleaseTimer: number | null = null;
+// Whether the mute request is currently outstanding. suppressStt() fires per
+// streamed token, so once the mute is engaged only the pending release timer
+// needs cancelling — not another IPC round-trip.
+let suppressEngaged = false;
 
 function suppressStt(): void {
   if (suppressReleaseTimer !== null) {
     window.clearTimeout(suppressReleaseTimer);
     suppressReleaseTimer = null;
   }
+  if (suppressEngaged) return;
+  suppressEngaged = true;
   // Cross-plugin via the host services registry (nil until the stt plugin
   // registers its provider in this window).
   void synthCtxRef?.services.stt()?.setSuppress(true);
@@ -82,6 +88,7 @@ function releaseSttWithGrace(): void {
   if (suppressReleaseTimer !== null) window.clearTimeout(suppressReleaseTimer);
   suppressReleaseTimer = window.setTimeout(() => {
     suppressReleaseTimer = null;
+    suppressEngaged = false;
     void synthCtxRef?.services.stt()?.setSuppress(false);
   }, SUPPRESS_GRACE_MS);
 }
@@ -174,6 +181,11 @@ function playAudioBuffer(
         /* already disconnected */
       }
       onViseme("neutral");
+      // Arm the grace release: the next buffer's suppressStt() cancels it
+      // (covering inter-chunk gaps); after the final buffer it actually
+      // fires and unmutes the mic. StreamTts never goes through speak(),
+      // so this is the only release path for streamed replies.
+      releaseSttWithGrace();
       resolve();
     };
 
@@ -277,6 +289,11 @@ export class StreamTts {
 
   push(token: string) {
     if (this.stopped) return;
+    // Mute the STT capture from the first token: the reply may start
+    // playing any moment, and trailing room/user audio must not reach the
+    // recognizer around the playback windows. releaseSttWithGrace() (armed
+    // by the last buffer's onended) lifts it once the reply finishes.
+    suppressStt();
     this.buffer += token;
     this.drain();
   }
@@ -303,6 +320,7 @@ export class StreamTts {
     this.flushed = false;
     haltPlayback();
     this.setSpeaking(false);
+    releaseSttWithGrace();
   }
 
   private drain() {
@@ -348,6 +366,7 @@ export class StreamTts {
         console.error("TTS chunk error:", e);
         if (this.flushed && this.queue.length === 0 && !this.buffer) {
           this.setSpeaking(false);
+          releaseSttWithGrace();
           this.onAllDone();
         }
       });
@@ -360,6 +379,7 @@ export class StreamTts {
       this.playing = false;
       if (this.flushed && !this.buffer) {
         this.setSpeaking(false);
+        releaseSttWithGrace();
         this.onAllDone();
       }
       return;
