@@ -6,7 +6,7 @@
 // voice plugin there are no legacy-account migrations — the split was a
 // clean cut.
 
-import type { PluginContext } from "@companion-lab/plugin";
+import type { PluginContext } from "../../../sdk/js/@companion/plugin";
 
 // ─── TTS settings ───
 
