@@ -3,6 +3,10 @@
 // moved to the stt plugin's Speech Recognition section).
 // - State comes from this plugin's TTS settings store (localStorage
 //   "companion:tts").
+// - The Model Loading card (load mode + TTS inference threads) moved here
+//   from the vrm plugin's Graphics section: it configures this plugin's
+//   engine, and reads/writes the host perf state through the SDK's
+//   useSettingsState bridge (the host still owns perf persistence).
 // - The Test/preview button emits the plugin-namespaced "tts-debug-play"
 //   event; the plugin's own main-window activation speaks it with noFallback
 //   and reports back on "tts-debug-done"/"tts-debug-error".
@@ -10,12 +14,47 @@
 
 import { useEffect, useState, useSyncExternalStore, type ChangeEvent } from "react";
 import type { PluginContext } from "../../../sdk/js/@companion/plugin";
+import { useSettingsState } from "../../../sdk/js/@companion/plugin";
 import {
   getTtsSettings,
   saveTtsSettings,
   subscribeTtsSettings,
   type TtsSettings,
 } from "./tts-settings";
+
+type PerfConfig = {
+  load_mode: "eager" | "lazy";
+  tts_threads: number;
+};
+
+const THREAD_OPTIONS = [0, 2, 4, 8] as const;
+
+function Presets<T extends string | number>({
+  options,
+  active,
+  onPick,
+  format,
+}: {
+  options: readonly T[];
+  active: T;
+  onPick: (v: T) => void;
+  format?: (v: T) => string;
+}) {
+  return (
+    <div className="preset-bar">
+      {options.map((o) => (
+        <button
+          key={String(o)}
+          type="button"
+          onClick={() => onPick(o)}
+          className={`preset-btn ${o === active ? "preset-btn-active" : ""}`}
+        >
+          {format ? format(o) : String(o)}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 const VOICES = ["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5", "F6", "F7"];
 // OpenAI-compatible speech voices.
@@ -102,6 +141,8 @@ export function TtsSettingsSection({ ctx }: { ctx: PluginContext }) {
 
   const { FormField, SectionCard, TextArea, TextInput, Select, RangeSlider, Button } =
     ctx.ui as Record<string, any>;
+  const { perf, setPerf } = useSettingsState();
+  const onPerfChange = (next: PerfConfig) => setPerf(next);
 
   return (
     <>
@@ -183,6 +224,32 @@ export function TtsSettingsSection({ ctx }: { ctx: PluginContext }) {
             onChange={(e: ChangeEvent<HTMLInputElement>) => onChange({ ...tts, steps: parseInt(e.target.value) })}
           />
         )}
+      </SectionCard>
+
+      <SectionCard title="Model Loading">
+        <FormField
+          label="Load mode"
+          hint="Lazy keeps the ~650 MB of TTS/STT models unloaded until first use: low idle RAM, slower first reply. Applies on next launch."
+        >
+          <Presets
+            options={["lazy", "eager"] as const}
+            active={perf.load_mode}
+            onPick={(v) => onPerfChange({ ...perf, load_mode: v })}
+            format={(v) => (v === "lazy" ? "Lazy" : "Eager")}
+          />
+        </FormField>
+
+        <FormField
+          label="TTS inference threads"
+          hint="CPU threads per TTS session. Auto follows core count. Lower this if synthesis starves the avatar render loop."
+        >
+          <Presets
+            options={THREAD_OPTIONS}
+            active={perf.tts_threads}
+            onPick={(v) => onPerfChange({ ...perf, tts_threads: v })}
+            format={(v) => (v === 0 ? "Auto" : v === 8 ? "Max" : String(v))}
+          />
+        </FormField>
       </SectionCard>
 
       <SectionCard title="Test Speech Output">
