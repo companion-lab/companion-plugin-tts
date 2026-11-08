@@ -8,15 +8,20 @@ importers:
 
   .:
     dependencies:
-      '@companion/plugin':
-        specifier: file:../../sdk/js/@companion/plugin
-        version: file:../../sdk/js/@companion/plugin
+      '@companion-lab/plugin':
+        specifier: ^0.1.0
+        version: 0.1.0
 
 packages:
 
-  '@companion/plugin@file:../../sdk/js/@companion/plugin':
-    resolution: {directory: ../../sdk/js/@companion/plugin, type: directory}
+  '@companion-lab/plugin@0.1.0':
+    resolution: {integrity: sha512-jiJOoVYl9EdFFWTXBUDcLghgzDrMoOq9JxU5vgB1V9mLpyyNmGPAUbg6YjGiCebcdvLitM+ubq34HBQIyCkVlQ==}
+    peerDependencies:
+      react: '>=18.0.0'
+    peerDependenciesMeta:
+      react:
+        optional: true
 
 snapshots:
 
-  '@companion/plugin@file:../../sdk/js/@companion/plugin': {}
+  '@companion-lab/plugin@0.1.0': {}
