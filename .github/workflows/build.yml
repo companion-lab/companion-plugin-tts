@@ -37,10 +37,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # No macos-x86_64 leg: ort-sys (pinned =2.0.0-rc.13) has no prebuilt
+        # ONNX Runtime for x86_64-apple-darwin, so the backend can't compile
+        # for Intel Macs. (The Companion app itself is also arm64-only.)
         include:
           - { os: ubuntu-latest,  platform: linux-x86_64 }
           - { os: macos-15,       platform: macos-arm64 }
-          - { os: macos-15-intel, platform: macos-x86_64 }
           - { os: windows-latest, platform: windows-x86_64 }
     runs-on: ${{ matrix.os }}
     defaults:
