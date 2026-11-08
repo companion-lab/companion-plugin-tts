@@ -213,6 +213,16 @@ export function TtsSettingsSection({ ctx }: { ctx: PluginContext }) {
           onChange={(e: ChangeEvent<HTMLInputElement>) => onChange({ ...tts, speed: parseFloat(e.target.value) })}
         />
 
+        <RangeSlider
+          label="Volume"
+          valueLabel={`${Math.round(tts.volume * 100)}%`}
+          min={0}
+          max={1}
+          step={0.05}
+          value={tts.volume}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => onChange({ ...tts, volume: parseFloat(e.target.value) })}
+        />
+
         {!isCloud && (
           <RangeSlider
             label="Inference Steps"

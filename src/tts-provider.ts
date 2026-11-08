@@ -14,7 +14,12 @@
 
 import type { PluginContext, TtsProvider, TtsStream } from "@companion-lab/plugin";
 import { cloudSynthesize } from "./cloud-tts";
-import { DEFAULT_TTS_SETTINGS, getTtsSettings, type TtsSettings } from "./tts-settings";
+import {
+  DEFAULT_TTS_SETTINGS,
+  getTtsSettings,
+  subscribeTtsSettings,
+  type TtsSettings,
+} from "./tts-settings";
 
 // ─── Audio graph ───
 
@@ -387,6 +392,9 @@ export class StreamTts {
 
     this.playing = true;
     this.setSpeaking(true);
+    // Same per-play volume application as speak()/speakLoop(): a preview with
+    // an override must not leave its volume on the master gain for streams.
+    setTtsVolume(this.settings.volume ?? 1.0);
     const buf = this.queue.shift()!;
     playAudioBuffer(buf, this.onViseme).then(() => this.playNext());
   }
@@ -558,6 +566,11 @@ function resolveSettings(settings: Record<string, unknown>): TtsSettings {
 
 export function createTtsProvider(ctx: PluginContext): TtsProvider {
   synthCtxRef = ctx;
+  // Seed the gain from the store and keep it live: the settings window only
+  // saves — playback happens on this window's graph, so a slider drag should
+  // reach it here even mid-utterance. Inert in windows that never play.
+  setTtsVolume(getTtsSettings().volume ?? 1.0);
+  subscribeTtsSettings(() => setTtsVolume(getTtsSettings().volume ?? 1.0));
   return {
     id: "tts",
     speak: (text, settings, onViseme, onEnd, opts) =>
