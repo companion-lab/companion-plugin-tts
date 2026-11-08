@@ -13,8 +13,8 @@
 // - UI kit components come from ctx.ui (the host's shared kit).
 
 import { useEffect, useState, useSyncExternalStore, type ChangeEvent } from "react";
-import type { PluginContext } from "../../../sdk/js/@companion/plugin";
-import { useSettingsState } from "../../../sdk/js/@companion/plugin";
+import type { PluginContext } from "@companion-lab/plugin";
+import { useSettingsState } from "@companion-lab/plugin";
 import {
   getTtsSettings,
   saveTtsSettings,
