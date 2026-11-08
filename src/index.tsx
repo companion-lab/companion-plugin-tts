@@ -87,7 +87,7 @@ export default definePlugin((ctx: PluginContext) => {
 
   const onViseme = (name: string, weight?: number) => ctx.avatar.setViseme(name, weight);
 
-  // Eager engine load, honoring the host's perf load_mode: skipped entirely
+  // Eager engine load, honoring the perf load_mode: skipped entirely
   // under "lazy" (synthesize() lazy-loads backend-side anyway), deferred past
   // startup under "eager" so the ~383MB ONNX load never contends with the
   // avatar's own model load (both route through the plugin host). Best-effort
@@ -95,8 +95,12 @@ export default definePlugin((ctx: PluginContext) => {
   const EAGER_TTS_LOAD_DELAY_MS = 3000;
   void (async () => {
     try {
+      // Perf config is the vrm plugin's backend state — a cross-plugin call
+      // must name the host command (this plugin's ctx.backend.call routes to
+      // the tts backend only).
       const perf = await tauriInvoke<{ load_mode?: "eager" | "lazy" }>(
-        "get_performance_config",
+        "plugin_call",
+        { plugin_id: "vrm", method: "vrm.get_performance_config" },
       );
       if (perf?.load_mode === "lazy") return;
     } catch {

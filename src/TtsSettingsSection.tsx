@@ -5,8 +5,8 @@
 //   "companion:tts").
 // - The Model Loading card (load mode + TTS inference threads) moved here
 //   from the vrm plugin's Graphics section: it configures this plugin's
-//   engine, and reads/writes the host perf state through the SDK's
-//   useSettingsState bridge (the host still owns perf persistence).
+//   engine, and reads/writes the shared perf state through the SDK's
+//   useSettingsState bridge (persistence lives in the vrm plugin backend).
 // - The Test/preview button emits the plugin-namespaced "tts-debug-play"
 //   event; the plugin's own main-window activation speaks it with noFallback
 //   and reports back on "tts-debug-done"/"tts-debug-error".

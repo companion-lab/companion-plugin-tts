@@ -125,9 +125,9 @@ fn req_usize(payload: &Value, key: &str) -> Result<usize, String> {
 pub struct TtsPlugin {
     ctx: Option<PluginCtx>,
     tts: tts::TtsState,
-    /// Intra-op threads for the TTS engine; perf.rs supplies this from
-    /// performance.json in the host, so here it is a settable value
-    /// (0 = auto). Read by `tts.synthesize` / `tts.load_engine`.
+    /// Intra-op threads for the TTS engine; settable per load via the
+    /// `tts.load_engine` payload (0 = auto). Read by `tts.synthesize` /
+    /// `tts.load_engine`.
     tts_threads: AtomicUsize,
 }
 
@@ -168,8 +168,9 @@ impl TtsPlugin {
             "tts.voices" => Ok(json!(tts::tts_voices())),
             "tts.languages" => Ok(json!(tts::tts_languages())),
             "tts.load_engine" => {
-                // perf.rs drives eager loading with perf_config.tts_threads;
-                // the optional payload field plays that role here.
+                // The optional payload field carries the shared perf
+                // config's tts_threads (persisted in the vrm plugin's
+                // backend); omitted calls keep the previous value.
                 if let Some(threads) = payload.get("tts_threads").and_then(Value::as_u64) {
                     self.tts_threads.store(threads as usize, Ordering::Relaxed);
                 }
