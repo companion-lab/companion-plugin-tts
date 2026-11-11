@@ -1,6 +1,7 @@
 // Speech Synthesis feature plugin frontend (the `tts` plugin — carved from
-// the pre-split voice plugin): the Speech Synthesis + Connection settings
-// sections, the TtsProvider (local Supertonic + cloud), and the main-window
+// the pre-split voice plugin): the Speech Synthesis settings tab, its cloud
+// TTS card on the Connection tab (the tab itself is owned by the chat
+// plugin), the TtsProvider (local Supertonic + cloud), and the main-window
 // activation (eager engine load, preview listeners, mic-active reaction —
 // the STT half of that reaction routes through ctx.services.stt()).
 //
@@ -35,10 +36,10 @@ export default definePlugin((ctx: PluginContext) => {
   // "companion:tts", keychain via ctx.secrets → tts:api-key).
   initTtsSettings(ctx);
 
-  // Settings: the Speech Synthesis tab is here; the shared Connection tab is
-  // registered by this plugin AND the stt plugin with the same id — the
-  // host's registry takes whichever registers first and both cloud cards
-  // render (sections are keyed by section id, not tab owner).
+  // Settings: the Speech Synthesis tab is here; the Connection tab is
+  // registered by the chat plugin (the AI backend is its primary card) and
+  // this plugin's cloud TTS card renders on it (sections are keyed by
+  // tabId, not tab owner).
   ctx.settings.registerTab({
     id: "tts",
     label: "Speech Synthesis",
@@ -47,16 +48,6 @@ export default definePlugin((ctx: PluginContext) => {
     desc: "Speech voice, language, speed, volume, and quality.",
     icon: ({ className }: { className?: string }) => (
       <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" /></svg>
-    ),
-  });
-  ctx.settings.registerTab({
-    id: "connection",
-    label: "Connection",
-    group: "Companion",
-    order: 15,
-    desc: "Speech endpoints and API keys.",
-    icon: ({ className }: { className?: string }) => (
-      <svg className={className} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0" /><path d="M1.42 9a16 16 0 0 1 21.16 0" /><path d="M8.53 16.11a6 6 0 0 1 6.95 0" /><line x1="12" y1="20" x2="12.01" y2="20" /></svg>
     ),
   });
   ctx.settings.registerSection({
