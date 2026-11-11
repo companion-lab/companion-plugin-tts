@@ -1,10 +1,17 @@
 {
   "id": "tts",
   "name": "Speech Synthesis",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "On-device TTS (Supertonic) + cloud synthesis, with a Speech Synthesis settings tab and the cloud TTS endpoint card.",
   "abi": 2,
-  "permissions": ["events", "secrets"],
-  "frontend": { "entry": "frontend.js" },
-  "backend": { "library": "libtts_backend.dylib" }
+  "permissions": [
+    "events",
+    "secrets"
+  ],
+  "frontend": {
+    "entry": "frontend.js"
+  },
+  "backend": {
+    "library": "libtts_backend.dylib"
+  }
 }

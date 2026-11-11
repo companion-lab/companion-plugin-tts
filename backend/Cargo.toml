@@ -1,6 +1,6 @@
 [package]
 name = "tts-backend"
-version = "0.1.0"
+version = "0.3.0"
 description = "TTS (speech synthesis) feature plugin backend for companion-tauri (Supertonic ONNX)"
 license = "MIT"
 edition = "2021"
@@ -10,7 +10,7 @@ name = "tts_backend"
 crate-type = ["cdylib"]
 
 [dependencies]
-companion-plugin-sdk = "0.1"
+companion-plugin-sdk = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Engine dependencies mirror app/src-tauri/Cargo.toml exactly (versions and

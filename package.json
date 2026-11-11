@@ -1,12 +1,12 @@
 {
   "name": "companion-plugin-tts",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "speech-synthesis (TTS) feature plugin for the Companion app.",
   "scripts": {
     "download:models": "bash scripts/download-models.sh"
   },
   "dependencies": {
-    "@companion-lab/plugin": "^0.1.0"
+    "@companion-lab/plugin": "^0.3.0"
   }
 }

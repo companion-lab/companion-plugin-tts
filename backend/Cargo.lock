@@ -65,9 +65,9 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "companion-plugin-sdk"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5213fbb339350aeab0fa7c703c44e5879ffd688c8f502ce543e857482344f453"
+checksum = "5db81ff806956f5dc8ad28f797fe3df2ec09cde8c65479e011d29aca441f3a81"
 dependencies = [
  "serde",
  "serde_json",
@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "tts-backend"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "companion-plugin-sdk",
