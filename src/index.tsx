@@ -11,7 +11,7 @@
 
 import { definePlugin, type PluginContext, type TtsSettingsLike } from "@companion-lab/plugin";
 import { currentWindowLabel, tauriInvoke, tauriListen } from "./tauri";
-import { initTtsSettings, getTtsSettings } from "./tts-settings";
+import { initTtsSettings, getTtsSettings, subscribeTtsSettings } from "./tts-settings";
 import { createTtsProvider } from "./tts-provider";
 import { TtsSettingsSection } from "./TtsSettingsSection";
 import { TtsCloudSection } from "./ConnectionSection";
@@ -68,6 +68,33 @@ export default definePlugin((ctx: PluginContext) => {
       return <TtsCloudSection ctx={ctx} />;
     },
   });
+
+  // ─── Voice tags in the LLM context ───
+  // The <laugh>-style expression tags are an engine feature of the local
+  // Supertonic model (cloud engines don't parse them), so the instruction
+  // lives HERE, not in the chat plugin's base system prompt. While the local
+  // engine is the configured provider, contribute a system-prompt fragment
+  // telling the model to use the tags; on cloud, re-register the same id
+  // with empty text (the chat prompt filters falsy fragments, so it
+  // disappears). Mirrors the tts-sakura plugin's "voice-tags" fragment —
+  // while Sakura has taken the voice slot its own fragment carries the pack's
+  // tags and countermands these angle-bracket ones.
+  const VOICE_TAG_PROMPT_ID = "voice-tags";
+  const syncVoiceTagPrompt = () => {
+    const local = getTtsSettings().ttsProvider !== "cloud";
+    ctx.systemPrompt.register({
+      id: VOICE_TAG_PROMPT_ID,
+      text: local
+        ? "Voice: the active speech engine is the local Supertonic model. " +
+          "Use TTS expression tags in the text to make speech more expressive — only these tags: " +
+          "<laugh>,<breath>,<surprise>,<sigh>,<scream>,<throatclear>,<sad>,<angry>,<cough>,<yawn>. " +
+          "Place double or triple tags at the start or end of sentences for emphasis. " +
+          "Example: <laugh><laugh> Hello! How can I help you today? <breath><breath>"
+        : "",
+    });
+  };
+  syncVoiceTagPrompt();
+  subscribeTtsSettings(syncVoiceTagPrompt);
 
   // Capability provider.
   const ttsProvider = createTtsProvider(ctx);
