@@ -119,16 +119,20 @@ jobs:
             exit 1
           fi
 
-      # ort-sys rc.13's build script (copy-dylibs) symlinks/copies the
-      # downloaded onnxruntime.dll into target/release, then into
-      # target/release/examples and target/release/deps. `cargo build` never
-      # creates examples/, so on a cold cargo cache the symlink into the
+      # ort-sys rc.13's build script (copy-dylibs) resolves the cargo profile
+      # dir as OUT_DIR.ancestors().nth(3) and symlinks/copies the downloaded
+      # onnxruntime.dll there, then into sibling examples/ and deps/ dirs.
+      # Newer cargo puts build-script output under
+      # target/release/build/<pkg>/<hash>/out (was build/<pkg>-<hash>/out), so
+      # nth(3) is now target/release/build — and cargo never creates its
+      # examples/ or deps/ siblings. On a cold cargo cache the symlink into a
       # missing dir fails and the fallback copy panics with
-      # ERROR_PATH_NOT_FOUND, failing every Windows build. Create the dirs
-      # up front so the build script always succeeds.
+      # ERROR_PATH_NOT_FOUND. Create both layouts' sibling dirs up front.
       - name: Create output dirs expected by ort-sys build script
         if: runner.os == 'Windows'
-        run: mkdir -p backend/target/release/examples backend/target/release/deps
+        run: |
+          mkdir -p backend/target/release/examples backend/target/release/deps
+          mkdir -p backend/target/release/build/examples backend/target/release/build/deps
 
       - name: Build plugin zip
         run: |
