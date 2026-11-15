@@ -1,6 +1,6 @@
 [package]
 name = "tts-backend"
-version = "0.3.0"
+version = "0.3.1"
 description = "TTS (speech synthesis) feature plugin backend for companion-tauri (Supertonic ONNX)"
 license = "MIT"
 edition = "2021"
