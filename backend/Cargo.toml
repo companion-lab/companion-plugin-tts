@@ -2,6 +2,7 @@
 name = "tts-backend"
 version = "0.3.1"
 description = "TTS (speech synthesis) feature plugin backend for companion-tauri (Supertonic ONNX)"
+authors = ["Companion Lab"]
 license = "MIT"
 edition = "2021"
 

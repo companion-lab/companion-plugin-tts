@@ -3,6 +3,7 @@
   "version": "0.3.1",
   "private": true,
   "description": "speech-synthesis (TTS) feature plugin for the Companion app.",
+  "author": "Companion Lab",
   "scripts": {
     "download:models": "bash scripts/download-models.sh"
   },

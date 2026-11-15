@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "tts-backend"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "companion-plugin-sdk",

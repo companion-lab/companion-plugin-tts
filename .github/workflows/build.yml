@@ -43,10 +43,7 @@ jobs:
         include:
           - { os: ubuntu-latest,  platform: linux-x86_64 }
           - { os: macos-15,       platform: macos-arm64 }
-          # Pinned: windows-latest migrated to Windows Server 2025 (gradual
-          # rollout, Nov 2026) and the backend build broke on the new image
-          # while Server 2022 kept working. Revisit when the cause is fixed.
-          - { os: windows-2022,   platform: windows-x86_64 }
+          - { os: windows-latest, platform: windows-x86_64 }
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -121,6 +118,17 @@ jobs:
             echo "::error::tag ${{ github.ref_name }} does not match manifest.json version ($expected)"
             exit 1
           fi
+
+      # ort-sys rc.13's build script (copy-dylibs) symlinks/copies the
+      # downloaded onnxruntime.dll into target/release, then into
+      # target/release/examples and target/release/deps. `cargo build` never
+      # creates examples/, so on a cold cargo cache the symlink into the
+      # missing dir fails and the fallback copy panics with
+      # ERROR_PATH_NOT_FOUND, failing every Windows build. Create the dirs
+      # up front so the build script always succeeds.
+      - name: Create output dirs expected by ort-sys build script
+        if: runner.os == 'Windows'
+        run: mkdir -p backend/target/release/examples backend/target/release/deps
 
       - name: Build plugin zip
         run: |
