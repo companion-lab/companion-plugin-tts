@@ -26,10 +26,118 @@ import {
 let audioCtx: AudioContext | null = null;
 let masterGain: GainNode | null = null;
 
+// WKWebView can leave the context unable to produce sound after the Mac
+// idles: state "interrupted" (a WebKit-only state, not in the TS union)
+// after sleep or audio-route changes, or an output device WebKit keeps
+// latched after it disappears while state still reads "running". Nothing in
+// the graph throws in those cases — playback just goes quiet and onended
+// may never fire — so recovery is proactive: resume on any non-running
+// state, and rebuild the whole graph when resume won't take (a fresh
+// context re-acquires the current default output device).
+
+const delay = (ms: number) =>
+  new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+let recoveryPass: Promise<AudioContext | null> | null = null;
+
+function logAudio(msg: string): void {
+  console.warn(`[tts audio] ${msg}`);
+  synthCtxRef?.log.warn(`[tts audio] ${msg}`);
+}
+
+function createCtx(): AudioContext {
+  const ctx = new AudioContext({ sampleRate: 44100 });
+  // Auto-recover whenever the context drops out of running mid-session —
+  // otherwise nothing would resume it until the next utterance happened to
+  // check (and an "interrupted" state would never resume at all, which is
+  // exactly the "no sound after idle" wedge).
+  ctx.addEventListener("statechange", () => {
+    const st = ctx.state as string;
+    if (st !== "running" && st !== "closed") scheduleRecovery();
+  });
+  return ctx;
+}
+
 function getAudioCtx(): AudioContext {
-  if (!audioCtx) audioCtx = new AudioContext({ sampleRate: 44100 });
-  if (audioCtx.state === "suspended") audioCtx.resume();
+  if (!audioCtx) audioCtx = createCtx();
   return audioCtx;
+}
+
+function scheduleRecovery(): void {
+  if (recoveryPass) return;
+  recoveryPass = recover().finally(() => {
+    recoveryPass = null;
+  });
+}
+
+/** Resume (with one retry) and, if the context still won't run, rebuild the
+ *  graph. Returns null when even a fresh context can't run — callers skip
+ *  the buffer instead of letting the playback promise hang forever. */
+async function recover(depth = 0): Promise<AudioContext | null> {
+  const ctx = getAudioCtx();
+  const before = ctx.state as string;
+  if (before === "running") return ctx;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await delay(250);
+    try {
+      await ctx.resume();
+    } catch (e) {
+      logAudio(`resume() rejected from ${before}: ${e}`);
+    }
+    if ((ctx.state as string) === "running") {
+      logAudio(`context resumed from ${before}`);
+      return ctx;
+    }
+  }
+  if (depth === 0) {
+    logAudio(`context stuck in ${ctx.state} after resume — rebuilding audio graph`);
+    rebuildGraph();
+    return recover(1);
+  }
+  logAudio(`context still in ${ctx.state} after rebuild — skipping playback this pass`);
+  return null;
+}
+
+/** Drop the graph and build a fresh one: closes the old context and resets
+ *  the cached gain node (recreated lazily at the current volume). */
+function rebuildGraph(): void {
+  const old = audioCtx;
+  audioCtx = null;
+  masterGain = null;
+  if (old) {
+    try {
+      void old.close();
+    } catch {
+      /* already closed */
+    }
+  }
+  audioCtx = createCtx();
+}
+
+// Playback after a long idle always gets a fresh graph: WebKit can latch
+// onto an output device that has since disappeared and keep rendering into
+// the void with state "running" — undetectable in-page, so preempt it.
+const IDLE_REBUILD_MS = 5 * 60 * 1000;
+let lastPlaybackAt = 0;
+
+async function preparePlayback(): Promise<AudioContext | null> {
+  const now = Date.now();
+  const idleFor = lastPlaybackAt ? now - lastPlaybackAt : 0;
+  lastPlaybackAt = now;
+  if (idleFor > IDLE_REBUILD_MS) {
+    logAudio(
+      `audio idle for ${Math.round(idleFor / 60000)} min — rebuilding graph before playback`,
+    );
+    rebuildGraph();
+  }
+  return ensureRunning();
+}
+
+async function ensureRunning(): Promise<AudioContext | null> {
+  if (recoveryPass) await recoveryPass.catch(() => {});
+  const ctx = getAudioCtx();
+  if ((ctx.state as string) === "running") return ctx;
+  return recover();
 }
 
 let currentVolume = 1.0;
@@ -121,12 +229,28 @@ function haltPlayback(): void {
   }
 }
 
-function playAudioBuffer(
+async function playAudioBuffer(
   audioBuf: AudioBuffer,
   onViseme: (name: string, weight?: number) => void,
 ): Promise<void> {
-  return new Promise((resolve) => {
-    const ctx = getAudioCtx();
+  // Revive/rebuild the context first so playback never starts into a dead
+  // graph (which schedules nothing audible and never fires onended).
+  let prepared: AudioContext | null = null;
+  try {
+    prepared = await preparePlayback();
+  } catch (e) {
+    logAudio(`playback prep failed: ${e}`);
+  }
+  if (!prepared) {
+    // Unrecoverable right now: resolve instead of hanging so the stream
+    // queue keeps moving; the next buffer gets a fresh recovery attempt.
+    logAudio("skipping buffer — audio context unavailable");
+    releaseSttWithGrace();
+    return;
+  }
+  const ctx = prepared;
+
+  return new Promise<void>((resolve) => {
     const source = ctx.createBufferSource();
     source.buffer = audioBuf;
     activeSource = source;
@@ -176,7 +300,16 @@ function playAudioBuffer(
       raf = requestAnimationFrame(tick);
     };
 
-    source.onended = () => {
+    // Watchdog: if the context dies mid-utterance, onended never fires and
+    // this promise would hang forever — wedging the StreamTts queue with
+    // playing=true and leaving the mic suppressed. Resolve on a deadline
+    // instead; the next buffer self-heals through preparePlayback().
+    let settled = false;
+    let watchdog = 0;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(watchdog);
       cancelAnimationFrame(raf);
       if (activeSource === source) activeSource = null;
       try {
@@ -193,6 +326,24 @@ function playAudioBuffer(
       releaseSttWithGrace();
       resolve();
     };
+
+    source.onended = finish;
+
+    watchdog = window.setTimeout(
+      () => {
+        if (settled) return;
+        logAudio(
+          `onended never fired (context ${ctx.state}) — watchdog released the queue`,
+        );
+        try {
+          source.stop();
+        } catch {
+          /* never started or already stopped */
+        }
+        finish();
+      },
+      Math.max(2000, audioBuf.duration * 1000 + 1500),
+    );
 
     // Suppression wraps every buffer: chunked streams stay covered across
     // the inter-chunk gaps because the next start cancels the grace timer.

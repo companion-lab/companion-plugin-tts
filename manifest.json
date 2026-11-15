@@ -13,5 +13,7 @@
   },
   "backend": {
     "library": "libtts_backend.dylib"
-  }
+  },
+  "versionCheckUrl": "https://github.com/companion-lab/companion-plugin-tts/releases/latest",
+  "updateUrl": "https://github.com/companion-lab/companion-plugin-tts/releases/latest/download/tts-{version}-{platform}.zip"
 }
