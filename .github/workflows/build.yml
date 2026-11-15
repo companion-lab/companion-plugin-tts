@@ -43,7 +43,10 @@ jobs:
         include:
           - { os: ubuntu-latest,  platform: linux-x86_64 }
           - { os: macos-15,       platform: macos-arm64 }
-          - { os: windows-latest, platform: windows-x86_64 }
+          # Pinned: windows-latest migrated to Windows Server 2025 (gradual
+          # rollout, Nov 2026) and the backend build broke on the new image
+          # while Server 2022 kept working. Revisit when the cause is fixed.
+          - { os: windows-2022,   platform: windows-x86_64 }
     runs-on: ${{ matrix.os }}
     defaults:
       run:
