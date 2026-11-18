@@ -12,6 +12,11 @@ export function normalizeSpeechBase(url: string): string {
   return url.trim().replace(/\/+$/, "").replace(/\/v1$/, "");
 }
 
+// Bound the request so a hung endpoint can't stall the chunk forever. The
+// provider also wraps this call in withTimeout; the abort here actually
+// cancels the in-flight request instead of just abandoning it.
+const CLOUD_TIMEOUT_MS = 20_000;
+
 export async function cloudSynthesize(
   text: string,
   opts: { voice: string; speed: number },
@@ -26,30 +31,37 @@ export async function cloudSynthesize(
       "No cloud TTS model set — configure the Cloud TTS endpoint in Settings → Connection",
     );
   }
-  const res = await doFetch(`${base}/v1/audio/speech`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      // Keyless endpoints (self-hosted servers) omit auth entirely.
-      ...(ttsKey ? { Authorization: `Bearer ${ttsKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model: tts.model,
-      input: text,
-      // Omit voice entirely for servers that pick their own default.
-      ...(opts.voice ? { voice: opts.voice } : {}),
-      speed: opts.speed,
-      response_format: tts.responseFormat ?? "mp3",
-    }),
-  });
-  await throwIfHttpError(res);
-  const audio = await res.arrayBuffer();
-  // Raw PCM has no container, so decodeAudioData can't read it. Wrap the
-  // 16-bit little-endian samples into a WAV header for playback.
-  if ((tts.responseFormat ?? "mp3") === "pcm") {
-    return wrapPcm16Wav(audio, PCM_SAMPLE_RATE);
+  const abort = new AbortController();
+  const timer = window.setTimeout(() => abort.abort(), CLOUD_TIMEOUT_MS);
+  try {
+    const res = await doFetch(`${base}/v1/audio/speech`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // Keyless endpoints (self-hosted servers) omit auth entirely.
+        ...(ttsKey ? { Authorization: `Bearer ${ttsKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: tts.model,
+        input: text,
+        // Omit voice entirely for servers that pick their own default.
+        ...(opts.voice ? { voice: opts.voice } : {}),
+        speed: opts.speed,
+        response_format: tts.responseFormat ?? "mp3",
+      }),
+      signal: abort.signal,
+    });
+    await throwIfHttpError(res);
+    const audio = await res.arrayBuffer();
+    // Raw PCM has no container, so decodeAudioData can't read it. Wrap the
+    // 16-bit little-endian samples into a WAV header for playback.
+    if ((tts.responseFormat ?? "mp3") === "pcm") {
+      return wrapPcm16Wav(audio, PCM_SAMPLE_RATE);
+    }
+    return audio;
+  } finally {
+    window.clearTimeout(timer);
   }
-  return audio;
 }
 
 /** Sample rate of OpenAI-compatible "pcm" speech output (16-bit mono LE). */

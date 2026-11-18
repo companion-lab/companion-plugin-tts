@@ -5,9 +5,13 @@
   "description": "speech-synthesis (TTS) feature plugin for the Companion app.",
   "author": "Companion Lab",
   "scripts": {
+    "test": "vitest run",
     "download:models": "bash scripts/download-models.sh"
   },
   "dependencies": {
     "@companion-lab/plugin": "^0.3.0"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.5"
   }
 }

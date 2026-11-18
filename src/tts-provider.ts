@@ -38,6 +38,32 @@ let masterGain: GainNode | null = null;
 const delay = (ms: number) =>
   new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
+// A wedged backend hangs its callers forever (tts.synthesize runs behind an
+// in-process Mutex and plugin_call has no IPC timeout), which would leave
+// enqueue()'s promise unsettled and the stream stalled with zero logs.
+// Bound the waits so a stuck chunk errors out and the queue keeps moving.
+const SYNTH_TIMEOUT_MS = 30_000;
+const CLOUD_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        window.clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        window.clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 let recoveryPass: Promise<AudioContext | null> | null = null;
 
 function logAudio(msg: string): void {
@@ -114,20 +140,16 @@ function rebuildGraph(): void {
   audioCtx = createCtx();
 }
 
-// Playback after a long idle always gets a fresh graph: WebKit can latch
-// onto an output device that has since disappeared and keep rendering into
-// the void with state "running" — undetectable in-page, so preempt it.
-const IDLE_REBUILD_MS = 5 * 60 * 1000;
-let lastPlaybackAt = 0;
-
-async function preparePlayback(): Promise<AudioContext | null> {
-  const now = Date.now();
-  const idleFor = lastPlaybackAt ? now - lastPlaybackAt : 0;
-  lastPlaybackAt = now;
-  if (idleFor > IDLE_REBUILD_MS) {
-    logAudio(
-      `audio idle for ${Math.round(idleFor / 60000)} min — rebuilding graph before playback`,
-    );
+// Every new utterance starts on a fresh graph: WebKit can latch onto an
+// output device that has since disappeared (sleep/wake, AirPods/monitor
+// switch) and keep rendering into the void with state "running" —
+// undetectable in-page, so preempt it. (An earlier 5-min idle timer lost to
+// anyone speaking more often than every 5 min: each attempt refreshed the
+// timestamp, so a latched graph was never rebuilt until an app restart.)
+async function preparePlayback(fresh = false): Promise<AudioContext | null> {
+  // Never yank the graph out from under a buffer that is still sounding.
+  if (fresh && !activeSource) {
+    logAudio("fresh graph for new utterance — rebuilding audio graph");
     rebuildGraph();
   }
   return ensureRunning();
@@ -142,9 +164,11 @@ async function ensureRunning(): Promise<AudioContext | null> {
 
 let currentVolume = 1.0;
 
-function getMasterGain(): GainNode {
-  const ctx = getAudioCtx();
-  if (!masterGain) {
+function getMasterGain(ctx: AudioContext): GainNode {
+  // Cached across plays, but it must belong to the *current* context — a
+  // graph rebuild swaps audioCtx, and connecting nodes across two contexts
+  // throws (or silently renders into a disconnected graph).
+  if (!masterGain || masterGain.context !== ctx) {
     masterGain = ctx.createGain();
     masterGain.gain.value = currentVolume;
     masterGain.connect(ctx.destination);
@@ -154,7 +178,7 @@ function getMasterGain(): GainNode {
 
 export function setTtsVolume(v: number): void {
   currentVolume = Math.min(1, Math.max(0, v));
-  if (!audioCtx || !masterGain) return;
+  if (!audioCtx || !masterGain || masterGain.context !== audioCtx) return;
   masterGain.gain.setTargetAtTime(currentVolume, audioCtx.currentTime, 0.03);
 }
 
@@ -232,12 +256,18 @@ function haltPlayback(): void {
 async function playAudioBuffer(
   audioBuf: AudioBuffer,
   onViseme: (name: string, weight?: number) => void,
+  opts: { freshGraph?: boolean } = {},
 ): Promise<void> {
   // Revive/rebuild the context first so playback never starts into a dead
   // graph (which schedules nothing audible and never fires onended).
   let prepared: AudioContext | null = null;
   try {
-    prepared = await preparePlayback();
+    prepared = await preparePlayback(opts.freshGraph ?? false);
+    // A concurrent recovery may have closed the context during the await
+    // above; re-check and give it one more preparation pass before use.
+    if (prepared && (prepared.state as string) !== "running") {
+      prepared = await preparePlayback(false);
+    }
   } catch (e) {
     logAudio(`playback prep failed: ${e}`);
   }
@@ -251,17 +281,32 @@ async function playAudioBuffer(
   const ctx = prepared;
 
   return new Promise<void>((resolve) => {
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuf;
-    activeSource = source;
+    // Graph nodes are built strictly on the prepared context — a graph
+    // rebuild racing this buffer must never mix nodes across two contexts.
+    let source: AudioBufferSourceNode;
+    let analyser: AnalyserNode;
+    try {
+      source = ctx.createBufferSource();
+      source.buffer = audioBuf;
+      activeSource = source;
 
-    const master = getMasterGain();
-    const analyser = ctx.createAnalyser();
-    // Small FFT keeps the time-domain window tight (~12ms) so viseme flips
-    // track the waveform instead of trailing it.
-    analyser.fftSize = 512;
-    source.connect(analyser);
-    analyser.connect(master);
+      const master = getMasterGain(ctx);
+      analyser = ctx.createAnalyser();
+      // Small FFT keeps the time-domain window tight (~12ms) so viseme flips
+      // track the waveform instead of trailing it.
+      analyser.fftSize = 512;
+      source.connect(analyser);
+      analyser.connect(master);
+    } catch (e) {
+      // Cross-context race or a dying context: resolve instead of throwing
+      // so the StreamTts queue keeps moving (a rejection here used to wedge
+      // playNext() with playing=true and the mic left suppressed).
+      logAudio(`playback graph failed: ${e}`);
+      onViseme("neutral");
+      releaseSttWithGrace();
+      resolve();
+      return;
+    }
 
     const timeData = new Float32Array(analyser.fftSize);
     let raf = 0;
@@ -273,6 +318,10 @@ async function playAudioBuffer(
     // with the syllable, closing eases over ~2-3 frames so the flap follows
     // the voice without jitter or mechanical chomping.
     let levelSm = 0;
+    // Loudest frame seen this buffer — feeds the silence detector in
+    // finish() (the analyser sits before the volume gain, so the slider
+    // can't mask it).
+    let maxRms = 0;
 
     // Throttle viseme analysis to ~30Hz on its own clock instead of full rAF:
     // same visual result, half the FFT work, and it stops competing with the
@@ -289,6 +338,7 @@ async function playAudioBuffer(
           if (i > 0 && timeData[i] >= 0 !== timeData[i - 1] >= 0) crossings++;
         }
         const rms = timeData.length ? Math.sqrt(sum / timeData.length) : 0;
+        maxRms = Math.max(maxRms, rms);
         const zcr = timeData.length > 1 ? crossings / (timeData.length - 1) : 0;
         peak = Math.max(rms, peak * 0.97);
         const level = peak > 0 ? rms / peak : 0;
@@ -317,6 +367,16 @@ async function playAudioBuffer(
         analyser.disconnect();
       } catch {
         /* already disconnected */
+      }
+      // Silence detector: a non-silent buffer that completed with no signal
+      // at all means the graph either never pulled the source or pulled it
+      // into nowhere — the "state running but silent" wedge. Rebuild now so
+      // the next utterance starts on a context bound to a live device.
+      if (audioBuf.duration >= 0.3 && maxRms < 0.001) {
+        logAudio(
+          `${audioBuf.duration.toFixed(1)}s buffer played with zero signal — output device likely latched, rebuilding audio graph`,
+        );
+        rebuildGraph();
       }
       onViseme("neutral");
       // Arm the grace release: the next buffer's suppressStt() cancels it
@@ -349,7 +409,14 @@ async function playAudioBuffer(
     // the inter-chunk gaps because the next start cancels the grace timer.
     suppressStt();
     raf = requestAnimationFrame(tick);
-    source.start(0);
+    try {
+      source.start(0);
+    } catch (e) {
+      // Never let a start failure escape the promise — finish() releases
+      // the mic and resolves the queue either way.
+      logAudio(`source.start failed: ${e}`);
+      finish();
+    }
   });
 }
 
@@ -374,12 +441,16 @@ async function synthesizeChunk(
     try {
       // OpenAI-compatible speech API accepts 0.25–4.0.
       const speed = Math.min(4, Math.max(0.25, settings.speed || 1));
-      const mp3 = await cloudSynthesize(trimmed, {
-        // Empty voice = server default; providers with a fixed id set
-        // (e.g. OpenAI) validate it and error loudly.
-        voice: settings.cloudVoice || "",
-        speed,
-      });
+      const mp3 = await withTimeout(
+        cloudSynthesize(trimmed, {
+          // Empty voice = server default; providers with a fixed id set
+          // (e.g. OpenAI) validate it and error loudly.
+          voice: settings.cloudVoice || "",
+          speed,
+        }),
+        CLOUD_TIMEOUT_MS,
+        "cloud TTS",
+      );
       return await getAudioCtx().decodeAudioData(mp3);
     } catch (e) {
       // Cloud failed (no key, network, bad model) — degrade to the local
@@ -391,13 +462,17 @@ async function synthesizeChunk(
 
   // Former `invoke("synthesize", …)` — the voice backend's method has the
   // same snake_case payload and returns a JSON array of wav bytes.
-  const wavBytes = await ctx.backend.call<number[]>("tts.synthesize", {
-    text: trimmed,
-    lang: settings.lang,
-    voice: settings.voice,
-    speed: settings.speed,
-    steps: settings.steps,
-  });
+  const wavBytes = await withTimeout(
+    ctx.backend.call<number[]>("tts.synthesize", {
+      text: trimmed,
+      lang: settings.lang,
+      voice: settings.voice,
+      speed: settings.speed,
+      steps: settings.steps,
+    }),
+    SYNTH_TIMEOUT_MS,
+    "tts.synthesize",
+  );
 
   const buf = new Uint8Array(wavBytes).buffer;
   return getAudioCtx().decodeAudioData(buf);
@@ -424,6 +499,10 @@ export class StreamTts {
   private speaking = false;
   private flushed = false;
   private stopped = false;
+  // The stream's first buffer starts on a fresh graph (per-utterance
+  // rebuild); later chunks must not swap contexts mid-reply when the queue
+  // briefly drains between chunks.
+  private firstPlayback = true;
   private gen: number;
   private settings: TtsSettings;
   private onViseme: VisemeFn;
@@ -547,7 +626,20 @@ export class StreamTts {
     // an override must not leave its volume on the master gain for streams.
     setTtsVolume(this.settings.volume ?? 1.0);
     const buf = this.queue.shift()!;
-    playAudioBuffer(buf, this.onViseme).then(() => this.playNext());
+    const freshGraph = this.firstPlayback;
+    this.firstPlayback = false;
+    playAudioBuffer(buf, this.onViseme, { freshGraph }).then(
+      () => this.playNext(),
+      (e) => {
+        // playAudioBuffer resolves on its own internal errors; this
+        // rejection handler is pure insurance so one failure can never
+        // wedge the queue or leave the mic suppressed.
+        console.error("playAudioBuffer rejected:", e);
+        this.onViseme("neutral");
+        releaseSttWithGrace();
+        this.playNext();
+      },
+    );
   }
 }
 
@@ -586,7 +678,7 @@ export async function speak(
       return;
     }
     setTtsVolume(settings.volume ?? 1.0);
-    await playAudioBuffer(buf, onViseme);
+    await playAudioBuffer(buf, onViseme, { freshGraph: true });
     finish();
   } catch (err) {
     if (opts.noFallback) {
@@ -642,11 +734,13 @@ export async function speakLoop(
   }
 
   setTtsVolume(settings.volume ?? 1.0);
+  let firstPass = true;
   try {
     // haltPlayback() ends the current buffer via onended, which resolves the
     // awaited promise; the generation check then breaks the loop.
     while (myGen === speakGeneration) {
-      await playAudioBuffer(buf, onViseme);
+      await playAudioBuffer(buf, onViseme, { freshGraph: firstPass });
+      firstPass = false;
       onViseme("neutral");
     }
   } finally {
