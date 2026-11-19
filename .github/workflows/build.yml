@@ -170,11 +170,20 @@ jobs:
       - name: Check Linux glibc compatibility
         if: ${{ hashFiles('backend/Cargo.toml') != '' && runner.os == 'Linux' }}
         run: |
-          lib=$(find dist-ci -name "*.so" | head -1)
-          if [ -z "$lib" ]; then
-            echo "::error::no backend .so found under dist-ci to check"
+          zip_path=$(find dist-ci -name "*.zip" | head -1)
+          if [ -z "$zip_path" ]; then
+            echo "::error::no plugin zip found under dist-ci to check"
             exit 1
           fi
+          # companion-cli assembles the package in a temp dir and ships only
+          # the zip, so the backend .so has to be pulled out of the archive.
+          entry=$(unzip -Z1 "$zip_path" | grep '\.so$' | head -1)
+          if [ -z "$entry" ]; then
+            echo "::error::$zip_path contains no backend .so to check"
+            exit 1
+          fi
+          lib=$(mktemp)
+          unzip -p "$zip_path" "$entry" > "$lib"
           python3 - "$lib" <<'PYEOF'
           import struct, sys
 
