@@ -41,7 +41,12 @@ jobs:
         # ONNX Runtime for x86_64-apple-darwin, so the backend can't compile
         # for Intel Macs. (The Companion app itself is also arm64-only.)
         include:
-          - { os: ubuntu-latest,  platform: linux-x86_64 }
+          # ubuntu-24.04, never ubuntu-latest: the backend statically embeds
+          # onnxruntime, so the runner's glibc/libstdc++ become the .so's
+          # permanent symbol-version floor. A floating tag silently raised it
+          # past what any Ubuntu LTS ships (v0.3.2 required GLIBC_2.43 and
+          # could not load anywhere) — pin to the oldest supported distro.
+          - { os: ubuntu-24.04,   platform: linux-x86_64 }
           - { os: macos-15,       platform: macos-arm64 }
           - { os: windows-latest, platform: windows-x86_64 }
     runs-on: ${{ matrix.os }}
@@ -153,6 +158,92 @@ jobs:
               ldd "$lib" || true
             fi
           fi
+
+      # The backend statically embeds onnxruntime, so the build runner's
+      # glibc/libstdc++ become the .so's permanent symbol-version floor
+      # (DT_NEEDED entries are versioned at link time). A newer runner than
+      # the oldest supported distro makes the backend unloadable for every
+      # user there — v0.3.2 shipped requiring GLIBC_2.43 (acosf/sinf/…
+      # re-versioned in glibc 2.43) and failed dlopen on every Ubuntu.
+      # Guard the pin above: fail when the built .so requires anything newer
+      # than ubuntu-24.04 ships (GLIBC 2.39, GLIBCXX 3.4.33, CXXABI 1.3.13).
+      - name: Check Linux glibc compatibility
+        if: ${{ hashFiles('backend/Cargo.toml') != '' && runner.os == 'Linux' }}
+        run: |
+          lib=$(find dist-ci -name "*.so" | head -1)
+          if [ -z "$lib" ]; then
+            echo "::error::no backend .so found under dist-ci to check"
+            exit 1
+          fi
+          python3 - "$lib" <<'PYEOF'
+          import struct, sys
+
+          raw = open(sys.argv[1], "rb").read()
+          assert raw[:4] == b"\x7fELF", f"{sys.argv[1]} is not an ELF file"
+
+          e_shoff = struct.unpack_from("<Q", raw, 0x28)[0]
+          e_shentsize = struct.unpack_from("<H", raw, 0x3A)[0]
+          e_shnum = struct.unpack_from("<H", raw, 0x3C)[0]
+          e_shstrndx = struct.unpack_from("<H", raw, 0x3E)[0]
+          sections = []
+          for i in range(e_shnum):
+              vals = struct.unpack_from("<IIQQQQIIQQ", raw, e_shoff + i * e_shentsize)
+              sections.append(dict(name=vals[0], offset=vals[4], size=vals[5], link=vals[6], info=vals[7]))
+          shstr = sections[e_shstrndx]
+
+          def sname(n):
+              end = raw.index(b"\x00", shstr["offset"] + n)
+              return raw[shstr["offset"] + n:end].decode()
+
+          secs = {sname(s["name"]): s for s in sections}
+          verneed = secs.get(".gnu.version_r")
+          dynstr = secs.get(".dynstr")
+          if verneed is None or dynstr is None:
+              print("no versioned symbol requirements — compatibility OK")
+              sys.exit(0)
+
+          def cstr(off):
+              end = raw.index(b"\x00", dynstr["offset"] + off)
+              return raw[dynstr["offset"] + off:end].decode()
+
+          # (prefix, version) pairs from every VERNEED entry.
+          reqs = []
+          vn_off = verneed["offset"]
+          for _ in range(verneed["info"]):
+              _, vn_cnt, _, vn_aux, vn_next = struct.unpack_from("<IHHII", raw, vn_off)
+              aux = vn_off + vn_aux
+              for _ in range(vn_cnt):
+                  _, _, _, vna_name, vna_next = struct.unpack_from("<IHHII", raw, aux)
+                  v = cstr(vna_name)
+                  prefix, _, ver = v.partition("_")
+                  if prefix and ver and ver.replace(".", "").isdigit():
+                      reqs.append((prefix, ver))
+                  if vna_next == 0:
+                      break
+                  aux += vna_next
+              if vn_next == 0:
+                  break
+              vn_off += vn_next
+
+          caps = {"GLIBC": (2, 39), "GLIBCXX": (3, 4, 33), "CXXABI": (1, 3, 13)}
+          bad = []
+          for prefix, ver in reqs:
+              if prefix not in caps:
+                  continue
+              nums = tuple(int(x) for x in ver.split("."))
+              if nums > caps[prefix]:
+                  bad.append(f"{prefix}_{ver}")
+          if bad:
+              print(f"::error::{sys.argv[1]} requires symbol versions newer than "
+                    f"ubuntu-24.04 ships (GLIBC 2.39 / GLIBCXX 3.4.33 / CXXABI 1.3.13): "
+                    f"{', '.join(sorted(set(bad)))}. Build on the pinned older runner.")
+              sys.exit(1)
+          found = sorted(
+              {f"{p}_{v}" for p, v in reqs if p in caps},
+              key=lambda s: tuple(int(x) for x in s.split("_")[1].split(".")),
+          )
+          print(f"glibc compatibility OK — highest required: {found[-1] if found else 'none'}")
+          PYEOF
 
       - uses: actions/upload-artifact@v4
         with:
