@@ -9,7 +9,7 @@
     "download:models": "bash scripts/download-models.sh"
   },
   "dependencies": {
-    "@companion-lab/plugin": "^0.3.0"
+    "@companion-lab/plugin": "^0.3.1"
   },
   "devDependencies": {
     "vitest": "^5.0.5"
