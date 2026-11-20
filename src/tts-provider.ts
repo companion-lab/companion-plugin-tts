@@ -44,6 +44,14 @@ const delay = (ms: number) =>
 // Bound the waits so a stuck chunk errors out and the queue keeps moving.
 const SYNTH_TIMEOUT_MS = 30_000;
 const CLOUD_TIMEOUT_MS = 20_000;
+// WebKit's resume() can return a promise that never settles on a wedged
+// ("interrupted") context. Bound it, or recoveryPass pins forever and every
+// later utterance hangs in ensureRunning() before the playback watchdog can
+// arm — silence until the app restarts.
+const RESUME_TIMEOUT_MS = 2_000;
+// decodeAudioData on a half-dead context can likewise never settle, which
+// would leave a chunk's promise hanging and stall the stream queue mid-reply.
+const DECODE_TIMEOUT_MS = 15_000;
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -106,9 +114,9 @@ async function recover(depth = 0): Promise<AudioContext | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) await delay(250);
     try {
-      await ctx.resume();
+      await withTimeout(ctx.resume(), RESUME_TIMEOUT_MS, "ctx.resume()");
     } catch (e) {
-      logAudio(`resume() rejected from ${before}: ${e}`);
+      logAudio(`resume() failed from ${before}: ${e}`);
     }
     if ((ctx.state as string) === "running") {
       logAudio(`context resumed from ${before}`);
@@ -253,11 +261,15 @@ function haltPlayback(): void {
   }
 }
 
+/** Plays one decoded buffer. Resolves true when source.start() actually
+ *  scheduled audio on the graph, false when the buffer was skipped (no
+ *  usable context) or start threw — StreamTts uses this to tell a reply
+ *  that was heard from one that vanished silently. */
 async function playAudioBuffer(
   audioBuf: AudioBuffer,
   onViseme: (name: string, weight?: number) => void,
   opts: { freshGraph?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
   // Revive/rebuild the context first so playback never starts into a dead
   // graph (which schedules nothing audible and never fires onended).
   let prepared: AudioContext | null = null;
@@ -276,11 +288,11 @@ async function playAudioBuffer(
     // queue keeps moving; the next buffer gets a fresh recovery attempt.
     logAudio("skipping buffer — audio context unavailable");
     releaseSttWithGrace();
-    return;
+    return false;
   }
   const ctx = prepared;
 
-  return new Promise<void>((resolve) => {
+  return new Promise<boolean>((resolve) => {
     // Graph nodes are built strictly on the prepared context — a graph
     // rebuild racing this buffer must never mix nodes across two contexts.
     let source: AudioBufferSourceNode;
@@ -304,7 +316,7 @@ async function playAudioBuffer(
       logAudio(`playback graph failed: ${e}`);
       onViseme("neutral");
       releaseSttWithGrace();
-      resolve();
+      resolve(false);
       return;
     }
 
@@ -356,6 +368,9 @@ async function playAudioBuffer(
     // instead; the next buffer self-heals through preparePlayback().
     let settled = false;
     let watchdog = 0;
+    // Whether source.start() succeeded — the resolution value that lets
+    // StreamTts distinguish a heard buffer from a silently skipped one.
+    let startOk = false;
     const finish = () => {
       if (settled) return;
       settled = true;
@@ -384,7 +399,7 @@ async function playAudioBuffer(
       // fires and unmutes the mic. StreamTts never goes through speak(),
       // so this is the only release path for streamed replies.
       releaseSttWithGrace();
-      resolve();
+      resolve(startOk);
     };
 
     source.onended = finish;
@@ -411,6 +426,7 @@ async function playAudioBuffer(
     raf = requestAnimationFrame(tick);
     try {
       source.start(0);
+      startOk = true;
     } catch (e) {
       // Never let a start failure escape the promise — finish() releases
       // the mic and resolves the queue either way.
@@ -427,6 +443,25 @@ type SynthOpts = {
    *  degrading to the local engine (which reads as "the switch did nothing"). */
   noFallback?: boolean;
 };
+
+/** decodeAudioData bounded: a decode queued on a wedged context can never
+ *  settle, which would hang the chunk's promise and stall the stream queue
+ *  mid-reply (with the mic left suppressed). On failure the graph is rebuilt
+ *  — the context is the usual culprit, and a rebuild is harmless when the
+ *  audio data itself was bad. */
+async function decodeWithRebuild(bytes: ArrayBuffer): Promise<AudioBuffer> {
+  try {
+    return await withTimeout(
+      getAudioCtx().decodeAudioData(bytes),
+      DECODE_TIMEOUT_MS,
+      "decodeAudioData",
+    );
+  } catch (e) {
+    logAudio(`decodeAudioData failed: ${e} — rebuilding audio graph`);
+    rebuildGraph();
+    throw e;
+  }
+}
 
 async function synthesizeChunk(
   ctx: PluginContext,
@@ -451,7 +486,7 @@ async function synthesizeChunk(
         CLOUD_TIMEOUT_MS,
         "cloud TTS",
       );
-      return await getAudioCtx().decodeAudioData(mp3);
+      return await decodeWithRebuild(mp3);
     } catch (e) {
       // Cloud failed (no key, network, bad model) — degrade to the local
       // engine instead of dropping the reply on the floor.
@@ -475,7 +510,7 @@ async function synthesizeChunk(
   );
 
   const buf = new Uint8Array(wavBytes).buffer;
-  return getAudioCtx().decodeAudioData(buf);
+  return decodeWithRebuild(buf);
 }
 
 // ─── StreamTts (sentence chunking) — host port ───
@@ -499,6 +534,11 @@ export class StreamTts {
   private speaking = false;
   private flushed = false;
   private stopped = false;
+  // Silence accounting: lets the all-done path log a prominent summary when
+  // an utterance ended without playing anything, instead of the pet just
+  // going quiet with nothing but per-chunk console noise to go on.
+  private failedChunks = 0;
+  private playedBuffers = 0;
   // The stream's first buffer starts on a fresh graph (per-utterance
   // rebuild); later chunks must not swap contexts mid-reply when the queue
   // briefly drains between chunks.
@@ -541,6 +581,15 @@ export class StreamTts {
     if (this.speaking === v) return;
     this.speaking = v;
     this.onSpeakingChange(v);
+  }
+
+  /** Prominent log when an utterance finished without playing any buffer —
+   *  "the pet just went quiet" becomes diagnosable from the log. */
+  private summarizeIfSilent(): void {
+    if (this.playedBuffers > 0) return;
+    logAudio(
+      `reply finished with NO audio (0 buffers played, ${this.failedChunks} chunk(s) failed synthesis)`,
+    );
   }
 
   flush() {
@@ -598,8 +647,10 @@ export class StreamTts {
         if (!this.playing) this.playNext();
       })
       .catch((e) => {
+        this.failedChunks++;
         console.error("TTS chunk error:", e);
         if (this.flushed && this.queue.length === 0 && !this.buffer) {
+          this.summarizeIfSilent();
           this.setSpeaking(false);
           releaseSttWithGrace();
           this.onAllDone();
@@ -613,6 +664,7 @@ export class StreamTts {
     if (this.queue.length === 0) {
       this.playing = false;
       if (this.flushed && !this.buffer) {
+        this.summarizeIfSilent();
         this.setSpeaking(false);
         releaseSttWithGrace();
         this.onAllDone();
@@ -629,7 +681,10 @@ export class StreamTts {
     const freshGraph = this.firstPlayback;
     this.firstPlayback = false;
     playAudioBuffer(buf, this.onViseme, { freshGraph }).then(
-      () => this.playNext(),
+      (started) => {
+        if (started) this.playedBuffers++;
+        this.playNext();
+      },
       (e) => {
         // playAudioBuffer resolves on its own internal errors; this
         // rejection handler is pure insurance so one failure can never
