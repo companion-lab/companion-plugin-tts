@@ -72,27 +72,33 @@ export default definePlugin((ctx: PluginContext) => {
   // ─── Voice tags in the LLM context ───
   // The <laugh>-style expression tags are an engine feature of the local
   // Supertonic model (cloud engines don't parse them), so the instruction
-  // lives HERE, not in the chat plugin's base system prompt. While the local
-  // engine is the configured provider, contribute a system-prompt fragment
-  // telling the model to use the tags; on cloud, re-register the same id
-  // with empty text (the chat prompt filters falsy fragments, so it
-  // disappears). Mirrors the tts-sakura plugin's "voice-tags" fragment —
-  // while Sakura has taken the voice slot its own fragment carries the pack's
-  // tags and countermands these angle-bracket ones.
+  // lives HERE, not in the chat plugin's base system prompt. Contribute the
+  // system-prompt fragment only while THIS plugin actually owns the active
+  // voice slot (provider configured to local AND on top of the takeover
+  // stack) — another voice plugin like tts-sakura registered on top must
+  // not see these tags in its prompt. Fragment ids are keyed per plugin, so
+  // sakura's own "voice-tags" fragment coexists with ours rather than
+  // replacing it; slot ownership is what keeps the two from both applying.
+  // On any of those conditions changing (own provider setting, or the
+  // takeover stack), re-register the same id with the matching text — empty
+  // when inactive (the chat prompt filters falsy fragments, so it
+  // disappears).
   const VOICE_TAG_PROMPT_ID = "voice-tags";
+  const VOICE_TAG_PROMPT_TEXT =
+    "Voice: the active speech engine is the local Supertonic model. " +
+    "Use TTS expression tags in the text to make speech more expressive — only these tags: " +
+    "<laugh>,<breath>,<surprise>,<sigh>,<scream>,<throatclear>,<sad>,<angry>,<cough>,<yawn>. " +
+    "Place double or triple tags at the start or end of sentences for emphasis. " +
+    "Example: <laugh><laugh> Hello! How can I help you today? <breath><breath>";
   const syncVoiceTagPrompt = () => {
-    const local = getTtsSettings().ttsProvider !== "cloud";
+    const ours =
+      getTtsSettings().ttsProvider !== "cloud" && ctx.services.tts()?.id === "tts";
     ctx.systemPrompt.register({
       id: VOICE_TAG_PROMPT_ID,
-      text: local
-        ? "Voice: the active speech engine is the local Supertonic model. " +
-          "Use TTS expression tags in the text to make speech more expressive — only these tags: " +
-          "<laugh>,<breath>,<surprise>,<sigh>,<scream>,<throatclear>,<sad>,<angry>,<cough>,<yawn>. " +
-          "Place double or triple tags at the start or end of sentences for emphasis. " +
-          "Example: <laugh><laugh> Hello! How can I help you today? <breath><breath>"
-        : "",
+      text: ours ? VOICE_TAG_PROMPT_TEXT : "",
     });
   };
+  ctx.services.onProvidersChanged(syncVoiceTagPrompt);
   syncVoiceTagPrompt();
   subscribeTtsSettings(syncVoiceTagPrompt);
 
