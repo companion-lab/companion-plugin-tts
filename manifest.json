@@ -1,7 +1,7 @@
 {
   "id": "tts",
   "name": "Speech Synthesis",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "On-device TTS (Supertonic) + cloud synthesis, with a Speech Synthesis settings tab and the cloud TTS endpoint card.",
   "abi": 3,
   "permissions": [
